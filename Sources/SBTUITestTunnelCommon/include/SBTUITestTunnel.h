@@ -25,7 +25,7 @@
 @import Foundation;
 @import ObjectiveC.NSObject;
 
-extern NSString * _Nonnull const SBTUITunneledApplicationLaunchEnvironmentBonjourNameKey;
+extern NSString * _Nonnull const SBTUITunneledApplicationLaunchEnvironmentIPCKey;
 extern NSString * _Nonnull const SBTUITunneledApplicationLaunchEnvironmentPortKey;
 extern NSString * _Nonnull const SBTUITunneledApplicationDefaultHost;
 
@@ -40,6 +40,8 @@ extern NSString * _Nonnull const SBTUITunneledApplicationLaunchSignal;
 extern NSString * _Nonnull const SBTUITunneledApplicationLaunchOptionResetFilesystem;
 extern NSString * _Nonnull const SBTUITunneledApplicationLaunchOptionDisableUITextFieldAutocomplete;
 extern NSString * _Nonnull const SBTUITunneledApplicationLaunchOptionHasStartupCommands;
+
+extern NSString * _Nonnull const SBTUITunnelIPCCommand;
 
 extern NSString * _Nonnull const SBTUITunnelHTTPMethod;
 

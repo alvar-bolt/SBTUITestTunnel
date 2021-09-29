@@ -24,7 +24,7 @@
 
 #import "include/SBTUITestTunnel.h"
 
-NSString * const SBTUITunneledApplicationLaunchEnvironmentBonjourNameKey = @"SBTUITunneledApplicationLaunchEnvironmentBonjourNameKey";
+NSString * const SBTUITunneledApplicationLaunchEnvironmentIPCKey = @"SBTUITunneledApplicationLaunchEnvironmentIPCKey";
 NSString * const SBTUITunneledApplicationLaunchEnvironmentPortKey = @"SBTUITunneledApplicationLaunchEnvironmentPortKey";
 NSString * const SBTUITunneledApplicationDefaultHost = @"localhost";
 
@@ -38,6 +38,8 @@ NSString * const SBTUITunneledApplicationLaunchSignal = @"SBTUITunneledApplicati
 NSString * const SBTUITunneledApplicationLaunchOptionResetFilesystem = @"SBTUITunneledApplicationLaunchOptionResetFilesystem";
 NSString * const SBTUITunneledApplicationLaunchOptionDisableUITextFieldAutocomplete = @"SBTUITunneledApplicationLaunchOptionDisableUITextFieldAutocomplete";
 NSString * const SBTUITunneledApplicationLaunchOptionHasStartupCommands = @"SBTUITunneledApplicationLaunchOptionHasStartupCommands";
+
+NSString * const SBTUITunnelIPCCommand = @"ipc_command";
 
 NSString * const SBTUITunnelHTTPMethod = @"POST";
 
