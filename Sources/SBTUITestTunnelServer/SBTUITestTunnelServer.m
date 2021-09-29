@@ -127,7 +127,6 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 {
     NSDictionary<NSString *, NSString *> *environment = [NSProcessInfo processInfo].environment;
     
-    NSString *bonjourName = environment[SBTUITunneledApplicationLaunchEnvironmentBonjourNameKey];
     NSString *tunnelPort = environment[SBTUITunneledApplicationLaunchEnvironmentPortKey];
     
     if (!tunnelPort && !bonjourName) {
@@ -188,10 +187,6 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
     if (tunnelPort) {
         [serverOptions setValue:@([tunnelPort intValue]) forKey:GCDWebServerOption_Port];
         NSLog(@"[SBTUITestTunnel] Starting server on port: %@", tunnelPort);
-    } else if (bonjourName) {
-        [serverOptions setValue:bonjourName forKey:GCDWebServerOption_BonjourName];
-        [serverOptions setValue:@"_http._tcp." forKey:GCDWebServerOption_BonjourType];
-        NSLog(@"[SBTUITestTunnel] Starting server with bonjour name: %@", bonjourName);
     } else {
         NSAssert(NO, @"No valid discovery method passed");
     }

@@ -11,10 +11,6 @@ import SBTUITestTunnelClient
 import XCTest
 
 class CoreLocationTests: XCTestCase {
-    override open class func setUp() {
-        UserDefaults.standard.setValue(false, forKey: "sbtuitesttunnel.disable.bonjour.discovery")
-    }
-
     func testCoreLocationStubAuthorizationStatus() {
         app.launchTunnel()
 
