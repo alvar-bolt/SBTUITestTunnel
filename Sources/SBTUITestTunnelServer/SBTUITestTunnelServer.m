@@ -135,6 +135,13 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
         return;
     }
     
+        NSLog(@"[UITestTunnelServer] HTTP tunnel taking off");
+        [self takeOffOnceUsingHTTPPort:tunnelPort];
+
+}
+
+- (void)takeOffOnceUsingHTTPPort:(NSString *)tunnelPort
+{
     Class requestClass = ([SBTUITunnelHTTPMethod isEqualToString:@"POST"]) ? [GCDWebServerURLEncodedFormRequest class] : [GCDWebServerRequest class];
     
     __weak typeof(self) weakSelf = self;
