@@ -46,6 +46,7 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
 
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *matchingRules;
 @property (nonatomic, strong) NSMutableArray<SBTMonitoredNetworkRequest *> *monitoredRequests;
+@property (nonatomic, strong) dispatch_queue_t monitoredRequestsSyncQueue;
 
 @property (nonatomic, strong) NSURLResponse *response;
 
@@ -75,6 +76,7 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
     self.tasksData = [NSMutableDictionary dictionary];
     self.tasksTime = [NSMutableDictionary dictionary];
     self.monitoredRequests = [NSMutableArray array];
+    self.monitoredRequestsSyncQueue = dispatch_queue_create("com.sbtuitesttunnel.protocol.queue", DISPATCH_QUEUE_SERIAL);
 }
 
 # pragma mark - Throttling
@@ -170,12 +172,19 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
 
 + (NSArray<SBTMonitoredNetworkRequest *> *)monitoredRequestsAll
 {
-    return [self.sharedInstance.monitoredRequests copy];
+    __block NSArray<SBTMonitoredNetworkRequest *> *ret;
+    dispatch_sync(self.sharedInstance.monitoredRequestsSyncQueue, ^{
+        ret = [self.sharedInstance.monitoredRequests copy];
+    });
+    
+    return ret;
 }
 
 + (void)monitoredRequestsFlushAll
 {
-    [self.sharedInstance.monitoredRequests removeAllObjects];
+    dispatch_sync(self.sharedInstance.monitoredRequestsSyncQueue, ^{
+        [self.sharedInstance.monitoredRequests removeAllObjects];
+    });
 }
 
 #pragma mark - Stubbing
@@ -411,7 +420,9 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
                 monitoredRequest.isStubbed = YES;
                 monitoredRequest.isRewritten = NO;
                 
-                [[SBTProxyURLProtocol sharedInstance].monitoredRequests addObject:monitoredRequest];
+                dispatch_sync([SBTProxyURLProtocol sharedInstance].monitoredRequestsSyncQueue, ^{
+                    [[SBTProxyURLProtocol sharedInstance].monitoredRequests addObject:monitoredRequest];
+                });
             }
             
             if ([stubResponse isKindOfClass:[SBTStubFailureResponse class]]) {
@@ -581,7 +592,9 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
             monitoredRequest.isStubbed = NO;
             monitoredRequest.isRewritten = isRequestRewritten;
             
-            [[SBTProxyURLProtocol sharedInstance].monitoredRequests addObject:monitoredRequest];
+            dispatch_sync([SBTProxyURLProtocol sharedInstance].monitoredRequestsSyncQueue, ^{
+                [[SBTProxyURLProtocol sharedInstance].monitoredRequests addObject:monitoredRequest];
+            });
         }
         
         if (isRequestRewritten) {
