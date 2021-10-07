@@ -976,7 +976,6 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
         if (![response isKindOfClass:[NSHTTPURLResponse class]]) {
             if (assertOnError) {
                 NSLog(@"[SBTUITestTunnel] Failed to get http response: %@", request);
-                // [weakSelf terminate];
             }
         } else {
             NSDictionary *jsonData = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
