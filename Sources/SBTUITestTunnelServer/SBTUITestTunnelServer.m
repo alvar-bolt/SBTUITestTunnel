@@ -76,7 +76,7 @@ void repeating_dispatch_after(int64_t delay, dispatch_queue_t queue, BOOL (^bloc
 
 @end
 
-@interface SBTUITestTunnelServer()
+@interface SBTUITestTunnelServer() <SBTIPCTunnel>
 
 @property (nonatomic, strong) GCDWebServer *server;
 @property (nonatomic, strong) dispatch_queue_t commandDispatchQueue;
@@ -87,6 +87,8 @@ void repeating_dispatch_after(int64_t delay, dispatch_queue_t queue, BOOL (^bloc
 @property (nonatomic, strong) NSMapTable<CLLocationManager *, id<CLLocationManagerDelegate>> *coreLocationActiveManagers;
 @property (nonatomic, strong) NSMutableString *coreLocationStubbedServiceStatus;
 @property (nonatomic, strong) NSMutableString *notificationCenterStubbedAuthorizationStatus;
+
+@property (nonatomic, strong) DTXIPCConnection* ipcConnection;
 
 @end
 
@@ -127,17 +129,75 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 {
     NSDictionary<NSString *, NSString *> *environment = [NSProcessInfo processInfo].environment;
     
+    NSString *ipcIdentifier = environment[SBTUITunneledApplicationLaunchEnvironmentIPCKey];
     NSString *tunnelPort = environment[SBTUITunneledApplicationLaunchEnvironmentPortKey];
     
-    if (!tunnelPort && !bonjourName) {
+    if (!tunnelPort && !ipcIdentifier) {
         // Required methods missing, presumely app wasn't launched from ui test
         NSLog(@"[UITestTunnelServer] required environment parameters missing, safely landing");
         return;
     }
     
+    if (ipcIdentifier) {
+        NSLog(@"[UITestTunnelServer] IPC tunnel taking off");
+        [self takeOffOnceIPCWithServiceIdentifier:ipcIdentifier];
+    } else {
         NSLog(@"[UITestTunnelServer] HTTP tunnel taking off");
         [self takeOffOnceUsingHTTPPort:tunnelPort];
+    }
+}
 
+- (void)takeOffOnceIPCWithServiceIdentifier:(NSString *)serviceIdentifier
+{
+    self.ipcConnection = [[DTXIPCConnection alloc] initWithServiceName:[NSString stringWithFormat:@"com.subito.sbtuitesttunnel.ipc.%@", serviceIdentifier]];
+    self.ipcConnection.exportedInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(SBTIPCTunnel)];
+    self.ipcConnection.exportedObject = self;
+
+    [self.ipcConnection resume];
+    
+    [self processLaunchOptionsIfNeeded];
+    
+    if (![[NSProcessInfo processInfo].arguments containsObject:SBTUITunneledApplicationLaunchSignal]) {
+        NSLog(@"[UITestTunnelServer] Signal launch option missing, safely landing!");
+        return;
+    }
+    
+    NSAssert([NSThread isMainThread], @"We synch startupCompleted on main thread");
+    NSTimeInterval start = CFAbsoluteTimeGetCurrent();
+    while (CFAbsoluteTimeGetCurrent() - start < SBTUITunneledServerDefaultTimeout) {
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        
+        if (self.startupCompleted) {
+            NSLog(@"[UITestTunnelServer] Up and running!");
+            return;
+        }
+    }
+    
+    BlockAssert(NO, @"[UITestTunnelServer] Fail waiting for launch semaphore");
+}
+
+- (void)performCommandWithParameters:(NSDictionary *)parameters block:(void (^)(NSDictionary *))block
+{
+    NSString *command = parameters[SBTUITunnelIPCCommand];
+
+    NSString *commandString = [command stringByAppendingString:@":"];
+    SEL commandSelector = NSSelectorFromString(commandString);
+    NSDictionary *response = nil;
+
+    if (![self processCustomCommandIfNecessary:command parameters:parameters returnObject:&response]) {
+        if (![self respondsToSelector:commandSelector]) {
+            BlockAssert(NO, @"[UITestTunnelServer] Unhandled/unknown command! %@", command);
+        }
+
+        IMP imp = [self methodForSelector:commandSelector];
+
+        NSLog(@"[UITestTunnelServer] Executing command '%@'", command);
+
+        NSDictionary * (*func)(id, SEL, NSDictionary *) = (void *)imp;
+        response = func(self, commandSelector, parameters);
+    }
+    
+    block(response);
 }
 
 - (void)takeOffOnceUsingHTTPPort:(NSString *)tunnelPort
@@ -725,6 +785,10 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 
 - (NSDictionary *)commandShutDown:(NSDictionary *)parameters
 {
+    if (self.ipcConnection) {
+        return @{ SBTUITunnelResponseResultKey: @"YES" };
+    }
+    
     [self reset];
     if (self.server.isRunning) {
         [self.server stop];
