@@ -165,7 +165,7 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
     NSAssert([NSThread isMainThread], @"We synch startupCompleted on main thread");
     NSTimeInterval start = CFAbsoluteTimeGetCurrent();
     while (CFAbsoluteTimeGetCurrent() - start < SBTUITunneledServerDefaultTimeout) {
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
         
         if (self.startupCompleted) {
             NSLog(@"[UITestTunnelServer] Up and running!");
@@ -269,7 +269,7 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
     NSAssert([NSThread isMainThread], @"We synch startupCompleted on main thread");
     NSTimeInterval start = CFAbsoluteTimeGetCurrent();
     while (CFAbsoluteTimeGetCurrent() - start < SBTUITunneledServerDefaultTimeout) {
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
         
         if (self.startupCompleted) {
             NSLog(@"[UITestTunnelServer] Up and running!");
