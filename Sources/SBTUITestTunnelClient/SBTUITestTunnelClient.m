@@ -417,56 +417,6 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
     return [[self sendSynchronousRequestWithPath:SBTUITunneledApplicationCommandMonitorRemoveAll params:nil] boolValue];
 }
 
-#pragma mark - Asynchronously Wait for Requests Commands
-
-- (void)waitForMonitoredRequestsMatching:(SBTRequestMatch *)match timeout:(NSTimeInterval)timeout completionBlock:(void (^)(BOOL timeout))completionBlock;
-{
-    [self waitForMonitoredRequestsMatching:match timeout:timeout iterations:1 completionBlock:completionBlock];
-}
-
-- (void)waitForMonitoredRequestsMatching:(SBTRequestMatch *)match timeout:(NSTimeInterval)timeout iterations:(NSUInteger)iterations completionBlock:(void (^)(BOOL timeout))completionBlock;
-{
-    [self waitForMonitoredRequestsWithMatchingBlock:^BOOL(SBTMonitoredNetworkRequest *request) {
-        return [request matches:match];
-    } timeout:timeout iterations:iterations completionBlock:completionBlock];
-}
-
-- (void)waitForMonitoredRequestsWithMatchingBlock:(BOOL(^)(SBTMonitoredNetworkRequest *))matchingBlock timeout:(NSTimeInterval)timeout iterations:(NSUInteger)iterations completionBlock:(void (^)(BOOL))completionBlock
-{
-    __weak typeof(self)weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^() {
-        NSTimeInterval start = CFAbsoluteTimeGetCurrent();
-        
-        BOOL timedout = NO;
-        
-        for(;;) {
-            NSUInteger localIterations = iterations;
-            NSArray<SBTMonitoredNetworkRequest *> *requests = [weakSelf monitoredRequestsPeekAll];
-            
-            for (SBTMonitoredNetworkRequest *request in requests) {
-                if (matchingBlock(request)) {
-                    if (--localIterations == 0) {
-                        break;
-                    }
-                }
-            }
-            
-            if (localIterations < 1) {
-                break;
-            } else if (CFAbsoluteTimeGetCurrent() - start > timeout) {
-                timedout = YES;
-                break;
-            }
-            
-            [NSThread sleepForTimeInterval:0.5];
-        }
-        
-        if (completionBlock) {
-            completionBlock(timedout);
-        }
-    });
-}
-
 #pragma mark - Synchronously Wait for Requests Commands
 
 - (BOOL)waitForMonitoredRequestsMatching:(SBTRequestMatch *)match timeout:(NSTimeInterval)timeout;
