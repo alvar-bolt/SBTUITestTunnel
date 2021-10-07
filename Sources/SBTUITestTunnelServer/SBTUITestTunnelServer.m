@@ -235,7 +235,7 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
             dispatch_semaphore_signal(sem);
         });
         
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(SBTUITunneledServerDefaultTimeout * NSEC_PER_SEC))) != 0) {}
         return ret;
     }];
     

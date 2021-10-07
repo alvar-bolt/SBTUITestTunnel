@@ -992,7 +992,7 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
         dispatch_semaphore_signal(synchRequestSemaphore);
     }] resume];
     
-    dispatch_semaphore_wait(synchRequestSemaphore, DISPATCH_TIME_FOREVER);
+    if (dispatch_semaphore_wait(synchRequestSemaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(SBTUITunneledApplicationDefaultTimeout * NSEC_PER_SEC))) != 0) {}
     
     return responseId;
 }
