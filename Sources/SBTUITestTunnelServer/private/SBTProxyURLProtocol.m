@@ -640,9 +640,8 @@ typedef void(^SBTStubUpdateBlock)(NSURLRequest *request);
             headersMatch &= [requestMatch matchesRequestHeaders:requestHeaders];
         }
         
-        NSDictionary *responseHeaders = @{};
         if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
-            responseHeaders = ((NSHTTPURLResponse *)response).allHeaderFields;
+            NSDictionary *responseHeaders = ((NSHTTPURLResponse *)response).allHeaderFields;
             
             headersMatch &= [requestMatch matchesResponseHeaders:responseHeaders];
         }
