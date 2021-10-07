@@ -49,8 +49,6 @@ NSString * const SBTUITunnelStubResponseKey = @"response";
 NSString * const SBTUITunnelRewriteMatchRuleKey = @"match_rule";
 NSString * const SBTUITunnelRewriteKey = @"rewrite_rule";
 
-NSString * const SBTUITunnelLocalExecutionKey = @"local_exec";
-
 NSString * const SBTUITunnelProxyQueryRuleKey = @"rule";
 NSString * const SBTUITunnelProxyQueryResponseTimeKey = @"time_response";
 

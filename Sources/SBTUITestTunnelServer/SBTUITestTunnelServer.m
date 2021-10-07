@@ -1342,7 +1342,6 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
     for (NSString *key in params) {
         unescapedParams[key] = [unescapedParams[key] stringByRemovingPercentEncoding];
     }
-    unescapedParams[SBTUITunnelLocalExecutionKey] = @(YES);
         
     NSDictionary *response = nil;
     
