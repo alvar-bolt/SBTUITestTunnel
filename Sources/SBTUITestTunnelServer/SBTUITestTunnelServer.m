@@ -801,13 +801,9 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 {
     __weak typeof(self)weakSelf = self;
     
-    // Wait one runloop so that we make sure that appDidFinishLaunching did complete successfully
-    dispatch_semaphore_t mainSemaphore = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{
         weakSelf.startupCompleted = YES; NSAssert([NSThread isMainThread], @"We synch on main thread");
-        dispatch_semaphore_signal(mainSemaphore);
     });
-    dispatch_semaphore_wait(mainSemaphore, DISPATCH_TIME_FOREVER);
     
     return @{ SBTUITunnelResponseResultKey: @"YES" };
 }
