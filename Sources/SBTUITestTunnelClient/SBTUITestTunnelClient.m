@@ -426,31 +426,28 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
 
 - (BOOL)waitForMonitoredRequestsMatching:(SBTRequestMatch *)match timeout:(NSTimeInterval)timeout iterations:(NSUInteger)iterations;
 {
-    __block BOOL result = NO;
-    __block BOOL done = NO;
+    NSTimeInterval start = CFAbsoluteTimeGetCurrent();
     
-    NSLock *doneLock = [[NSLock alloc] init];
-    
-    [self waitForMonitoredRequestsMatching:match timeout:timeout iterations:iterations completionBlock:^(BOOL didTimeout) {
-        result = !didTimeout;
+    while (CFAbsoluteTimeGetCurrent() - start < timeout) {
+        NSArray<SBTMonitoredNetworkRequest *> *requests = [self monitoredRequestsPeekAll];
         
-        [doneLock lock];
-        done = YES;
-        [doneLock unlock];
-    }];
-    
-    for (;;) {
-        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-        
-        [doneLock lock];
-        if (done) {
-            [doneLock unlock];
-            break;
+        NSUInteger localIterations = iterations;
+        for (SBTMonitoredNetworkRequest *request in requests) {
+            if ([request matches:match]) {
+                if (--localIterations == 0) {
+                    return YES;
+                }
+            }
         }
-        [doneLock unlock];
+        
+        if (iterations == 0) {
+            return localIterations == iterations;
+        }
+        
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
     }
-    
-    return result;
+
+    return NO;
 }
 
 #pragma mark - Throttle Requests Commands

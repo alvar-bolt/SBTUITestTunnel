@@ -450,81 +450,34 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
     return @{ SBTUITunnelResponseResultKey: @"YES" };
 }
 
-- (NSDictionary *)commandMonitorPeek:(NSDictionary *)parameters
+- (NSDictionary *)commandMonitor:(NSDictionary *)parameters flush:(BOOL)flag
 {
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block NSArray<SBTMonitoredNetworkRequest *> *requestsToFlush = @[];
     
-    __block NSString *ret = @"";
-    __block NSArray<SBTMonitoredNetworkRequest *> *requestsToPeek = @[];
-    __block NSString *debugInfo = @"";
-    
-    void (^monitorBlock)(void) = ^{
-        requestsToPeek = [SBTProxyURLProtocol monitoredRequestsAll];
-        
-        NSData *data = [NSKeyedArchiver archivedDataWithRootObject:requestsToPeek];
-        if (data) {
-            ret = [data base64EncodedStringWithOptions:0];
-        }
-        
-        debugInfo = [NSString stringWithFormat:@"Found %ld monitored requests", (unsigned long)requestsToPeek.count];
-    };
-    
-    if ([parameters[SBTUITunnelLocalExecutionKey] boolValue]) {
-        if ([NSThread isMainThread]) {
-            monitorBlock();
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{ monitorBlock(); });
-        }
-    } else {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // we use main thread to synchronize access to self.monitoredRequests
-            monitorBlock();
-            
-            dispatch_semaphore_signal(sem);
-        });
-        
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    requestsToFlush = [SBTProxyURLProtocol monitoredRequestsAll];
+    if (flag) {
+        [SBTProxyURLProtocol monitoredRequestsFlushAll];
     }
+
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:requestsToFlush];
+    NSString *ret = @"";
+    if (data) {
+        ret = [data base64EncodedStringWithOptions:0];
+    }
+    
+    NSString *debugInfo = [NSString stringWithFormat:@"Found %ld monitored requests", (unsigned long)requestsToFlush.count];
     
     return @{ SBTUITunnelResponseResultKey: ret ?: @"", SBTUITunnelResponseDebugKey: debugInfo ?: @"" };
 }
 
+- (NSDictionary *)commandMonitorPeek:(NSDictionary *)parameters
+{
+    return [self commandMonitor:parameters flush:NO];
+}
+
 - (NSDictionary *)commandMonitorFlush:(NSDictionary *)parameters
 {
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    
-    __block NSString *ret = @"";
-    __block NSArray<SBTMonitoredNetworkRequest *> *requestsToFlush = @[];
-
-    void (^flushBlock)(void) = ^{
-        requestsToFlush = [SBTProxyURLProtocol monitoredRequestsAll];
-        [SBTProxyURLProtocol monitoredRequestsFlushAll];
-        
-        NSData *data = [NSKeyedArchiver archivedDataWithRootObject:requestsToFlush];
-        if (data) {
-            ret = [data base64EncodedStringWithOptions:0];
-        }
-    };
-    
-    if ([parameters[SBTUITunnelLocalExecutionKey] boolValue]) {
-        if ([NSThread isMainThread]) {
-            flushBlock();
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{ flushBlock(); });
-        }
-    } else {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // we use main thread to synchronize access to self.monitoredRequests
-            flushBlock();
-            
-            dispatch_semaphore_signal(sem);
-        });
-        
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-    }
-    
-    NSString *debugInfo = [NSString stringWithFormat:@"Found %ld monitored requests", (unsigned long)requestsToFlush.count];
-    return @{ SBTUITunnelResponseResultKey: ret ?: @"", SBTUITunnelResponseDebugKey: debugInfo ?: @"" };
+    return [self commandMonitor:parameters flush:YES];
 }
 
 #pragma mark - Request Throttle Commands
