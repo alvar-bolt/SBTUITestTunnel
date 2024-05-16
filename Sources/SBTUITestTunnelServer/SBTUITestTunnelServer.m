@@ -156,27 +156,34 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 
 - (BOOL)takeOffOnceIPCWithServiceIdentifier:(NSString *)serviceIdentifier
 {
+    NSLog(@"[SBTUITestTunnel] Starting IPC tunnel");
     self.ipcConnection = [[DTXIPCConnection alloc] initWithServiceName:[NSString stringWithFormat:@"com.subito.sbtuitesttunnel.ipc.%@", serviceIdentifier]];
     self.ipcConnection.remoteObjectInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(SBTIPCTunnel)];
     self.ipcConnection.exportedInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(SBTIPCTunnel)];
     self.ipcConnection.exportedObject = self;
 
+    NSLog(@"[SBTUITestTunnel] Resuming IPC connection");
     [self.ipcConnection resume];
     
+    NSLog(@"[SBTUITestTunnel] Getting IPC proxy");
     self.ipcProxy = [self.ipcConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        BlockAssert(NO, @"[UITestTunnelServer] Failed getting IPC proxy");
+        BlockAssert(NO, @"[UITestTunnelServer] Failed getting IPC proxy (2)");
     }];
     
+    NSLog(@"[SBTUITestTunnel] Notifying IPC proxy of connection");
     [self.ipcProxy serverDidConnect:nil];
 
+    NSLog(@"[SBTUITestTunnel] Processing launch options");
     [self processLaunchOptionsIfNeeded];
 
+    NSLog(@"[SBTUITestTunnel] Checking for startup semaphore");
     if (![[NSProcessInfo processInfo].arguments containsObject:SBTUITunneledApplicationLaunchSignal]) {
         NSLog(@"[SBTUITestTunnel] Signal launch option missing, safely landing!");
         return NO;
     }
     
     NSAssert([NSThread isMainThread], @"We synch startupCompleted on main thread");
+    NSLog(@"[SBTUITestTunnel] Waiting for startup semaphore");
     NSTimeInterval start = CFAbsoluteTimeGetCurrent();
     while (CFAbsoluteTimeGetCurrent() - start < SBTUITunneledServerDefaultTimeout) {
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
@@ -820,6 +827,7 @@ static NSTimeInterval SBTUITunneledServerDefaultTimeout = 60.0;
 
 - (NSDictionary *)commandStartupCompleted:(NSDictionary *)parameters
 {
+    NSLog(@"[SBTUITestTunnel] Startup completed");
     __weak typeof(self)weakSelf = self;
     
     dispatch_async(dispatch_get_main_queue(), ^{
