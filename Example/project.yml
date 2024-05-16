@@ -3,7 +3,7 @@ name: SBTUITestTunnel
 options:
   bundleIdPrefix: com.subito
   groupSortPosition: top
-  postGenCommand: "pod install"
+  postGenCommand: "bundle exec pod install"
 
 fileGroups:
   - SBTUITestTunnel_Example.entitlements
