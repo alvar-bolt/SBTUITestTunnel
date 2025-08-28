@@ -411,7 +411,7 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
         NSError *unarchiveError;
         NSSet *classes = [NSSet setWithObjects:[NSArray class], [SBTMonitoredNetworkRequest class], nil];
         NSArray *result = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:objectData error:&unarchiveError];
-        NSAssert(unarchiveError == nil, @"Error unarchiving NSArray of SBTMonitoredNetworkRequest");
+        NSAssert(unarchiveError == nil, ([NSString stringWithFormat:@"Error unarchiving NSArray of SBTMonitoredNetworkRequest. Error: %@, objectBase64: %@", unarchiveError, objectBase64]));
 
         return result ?: @[];
     }
