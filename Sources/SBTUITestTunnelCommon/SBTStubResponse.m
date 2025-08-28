@@ -77,11 +77,16 @@ static SBTResponseDefaults *_defaults;
             self.data = [(NSString *)response dataUsingEncoding:NSUTF8StringEncoding];
         } else if ([response isKindOfClass:[NSDictionary class]]) {
             NSError *error = nil;
-            NSData *data = [NSJSONSerialization dataWithJSONObject:(NSDictionary *)response options:0 error:&error];
-            if (error != nil) {
-                NSAssert(NO, @"Failed serializing response");
+            NSData *data;
+            if ([NSJSONSerialization isValidJSONObject:response]) {
+                data = [NSJSONSerialization dataWithJSONObject:(NSDictionary *)response options:0 error:&error];
+                if (error != nil) {
+                    NSAssert(NO, @"Failed serializing response");
+                }
+            } else {
+                data = [NSJSONSerialization dataWithJSONObject:@{@"foo" : @"error"} options:0 error:&error];
             }
-            
+
             self.data = data;
         } else {
             NSAssert(NO, @"Invalid response type, expecting NSData, NSString or NSDictionary");

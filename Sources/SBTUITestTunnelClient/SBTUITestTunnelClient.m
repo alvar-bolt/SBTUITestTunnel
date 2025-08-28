@@ -1109,12 +1109,17 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
                 NSLog(@"[SBTUITestTunnel] Failed to get http response: %@", request);
             }
         } else {
-            NSDictionary *jsonData = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
-            responseId = jsonData[SBTUITunnelResponseResultKey];
-            
-            if (assertOnError) {
-                if (((NSHTTPURLResponse *)response).statusCode != 200) {
-                    NSLog(@"[SBTUITestTunnel] Message sending failed: %@", request);
+            NSError *error = nil;
+            NSDictionary *jsonData = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&error];
+            if (error != nil) {
+                NSLog(@"[SBTUITestTunnel] NSJSONSerialization error %@", error.description);
+            } else {
+                responseId = jsonData[SBTUITunnelResponseResultKey];
+
+                if (assertOnError) {
+                    if (((NSHTTPURLResponse *)response).statusCode != 200) {
+                        NSLog(@"[SBTUITestTunnel] Message sending failed: %@", request);
+                    }
                 }
             }
         }
