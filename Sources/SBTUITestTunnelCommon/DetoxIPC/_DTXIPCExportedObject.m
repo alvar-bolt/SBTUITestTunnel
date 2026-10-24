@@ -23,8 +23,8 @@
 	{
 		local->_connection = connection;
 		local->_target = object;
-		local->_invocation = [NSInvocation _dtx_invocationWithSerializedDictionary:serializedInvocation remoteConnection:local->_connection];
-		[local->_invocation retainArguments];
+		local->_invocation = [NSInvocation _dtx_invocationWithSerializedDictionary:serializedInvocation remoteConnection:local->_connection resolvedBlock:object];
+        if (local->_invocation == nil) { return nil; }
 		if([local->_invocation isKindOfClass:NSClassFromString(@"NSBlockInvocation")] == NO)
 		{
 			local->_invocation.target = local->_target;

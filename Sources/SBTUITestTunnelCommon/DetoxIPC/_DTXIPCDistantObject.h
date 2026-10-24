@@ -15,8 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface _DTXIPCDistantObject : NSObject
 
 + (instancetype)_distantObjectWithConnection:(DTXIPCConnection*)connection synchronous:(BOOL)synchronous errorBlock:(void(^ __nullable)(NSError*))errorBlock;
-- (void)_enterReplyBlock;
-- (void)_leavelReplyBlock;
+- (nullable dispatch_group_t)_enterReplyGroup;
 - (BOOL)_enqueueSynchronousExportedObjectInvocation:(_DTXIPCExportedObject*)object;
 
 @property (nonatomic, readonly, getter=isSynchronous) BOOL synchronous;

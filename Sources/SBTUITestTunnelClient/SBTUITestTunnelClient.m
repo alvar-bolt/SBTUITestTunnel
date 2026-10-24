@@ -43,6 +43,7 @@ const NSString *SBTUITunnelJsonMimeType = @"application/json";
 @property (nonatomic, assign) BOOL startupCompleted;
 @property (nonatomic, strong) DTXIPCConnection* ipcConnection;
 @property (nonatomic, strong) id<SBTIPCTunnel> ipcProxy;
+@property (nonatomic, strong) NSError *ipcRequestError;
 @property (nonatomic, assign) NSTimeInterval launchStart;
 
 @end
@@ -76,6 +77,7 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
     self.startupBlock = nil;
 
     self.startupCompleted = NO;
+    self.ipcRequestError = nil;
     self.connected = NO;
     self.connectionPort = 0;
     self.connectionTimeout = SBTUITunneledApplicationDefaultTimeout;
@@ -141,8 +143,9 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
             
         [self.ipcConnection resume];
         
+        __weak typeof(self) weakSelf = self;
         self.ipcProxy = [self.ipcConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-            NSLog(@"Failed getting IPC proxy, %@", error.description);
+            weakSelf.ipcRequestError = error;
         }];
             
         launchEnvironment[SBTUITunneledApplicationLaunchEnvironmentIPCKey] = serviceIdentifier;
@@ -1053,11 +1056,22 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
         NSMutableDictionary *ipcParams = [(params ?: @{}) mutableCopy];
         ipcParams[SBTUITunnelIPCCommand] = path;
                 
+        self.ipcRequestError = nil;
         __block NSDictionary *ret = nil;
         [self.ipcProxy performCommandWithParameters:ipcParams block:^void(NSDictionary *dict) {
             ret = dict;
         }];
 
+        if (self.ipcRequestError != nil || ret == nil) {
+            NSError *error = self.ipcRequestError ?: [self.class errorWithCode:SBTUITestTunnelErrorConnectionToApplicationFailed
+                                                                      message:[NSString stringWithFormat:@"[SBTUITestTunnel] IPC command %@ completed without a reply", path]];
+            if (assertOnError) {
+                [self shutDownWithError:error];
+            } else {
+                NSLog(@"[SBTUITestTunnel] Optional IPC command failed: %@", error.localizedDescription);
+            }
+            return nil;
+        }
         return ret[SBTUITunnelResponseResultKey];
     } else if (self.connectionlessBlock) {
         if ([NSThread isMainThread]) {

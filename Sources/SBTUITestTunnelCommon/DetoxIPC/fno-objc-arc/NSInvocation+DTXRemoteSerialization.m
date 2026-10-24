@@ -280,19 +280,32 @@ static id _decodeObject(NSDictionary* encodedObj, DTXIPCConnection* connection)
 		NSString* remoteIdentifier = encodedObj[@"remoteIdentifier"];
 		
 		id localForwardingBlock = __NSMakeSpecialForwardingCaptureBlock(signature, ^(NSInvocation *inv) {
-			objc_setAssociatedObject(inv, _DTXRemoteBlockIdentifierKey, remoteIdentifier, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-			NSDictionary* serialized = [inv _dtx_serializedDictionaryForDistantObject:nil];
-
-			NSCAssert(connection.isValid, @"Connection %@ is invalid.", connection);
-			[connection.otherConnection.rootProxy _invokeRemoteBlock:serialized];
+            if (connection.isValid == NO) {
+                NSLog(@"[DTXIPC] event=callback_after_invalidation callback_id=%@", remoteIdentifier);
+                return;
+            }
+            objc_setAssociatedObject(inv, _DTXRemoteBlockIdentifierKey, remoteIdentifier, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSDictionary* serialized = [inv _dtx_serializedDictionaryForDistantObject:nil];
+            @try {
+                [connection.otherConnection.rootProxy _invokeRemoteBlock:serialized];
+            } @catch (NSException* exception) {
+                if (connection.isValid) { [exception raise]; }
+            }
 			
 			NSLog(@"%@", inv);
 		});
 		
 		objc_setAssociatedObject(localForwardingBlock, _DTXCleanupIdentifierKey, [_DTXCleanUpHandler cleanUpHandlerWithBlock:^{
 			//This should be called when the block is released. This block is sent to the client code, so if they retain it, so will the remote block. Once the client code releases the block, we will notify the system to clean the remote block.
-			NSCAssert(connection.isValid, @"Connection %@ is invalid.", connection);
-			[connection.otherConnection.rootProxy _cleanupRemoteBlock:remoteIdentifier];
+            // The peer may have invalidated the transport while releasing this forwarding block.
+            // Cleanup has no reply to deliver; disconnection must not turn deallocation into a crash.
+            if (connection.isValid) {
+                @try {
+                    [connection.otherConnection.rootProxy _cleanupRemoteBlock:remoteIdentifier];
+                } @catch (NSException* exception) {
+                    if (connection.isValid) { [exception raise]; }
+                }
+            }
 		}], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 		
 		rv = [localForwardingBlock autorelease];
@@ -414,9 +427,15 @@ static void _decodeInvocation(NSDictionary* serialized, NSInvocation* invocation
 //Returns autoreleased invocation
 + (instancetype)_dtx_invocationWithSerializedDictionary:(NSDictionary*)serialized remoteConnection:(nonnull DTXIPCConnection *)connection
 {
+    NSString* identifier = serialized[@"remoteBlockIdentifier"];
+    _DTXIPCRemoteBlockSnapshot* snapshot = serialized[@"blockCall"] && identifier ? [_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier] : nil;
+    return [self _dtx_invocationWithSerializedDictionary:serialized remoteConnection:connection resolvedBlock:snapshot.block];
+}
+
++ (instancetype)_dtx_invocationWithSerializedDictionary:(NSDictionary*)serialized remoteConnection:(nonnull DTXIPCConnection *)connection resolvedBlock:(id)localBlock
+{
 	NSMethodSignature* methodSignature = nil;
 	NSString* blockId = nil;
-	id localBlock = nil;
 	Class invocationClass = NSInvocation.class;
 	SEL selector = NULL;
 	
@@ -432,7 +451,10 @@ static void _decodeInvocation(NSDictionary* serialized, NSInvocation* invocation
 		}
 		
 		invocationClass = NSClassFromString(@"NSBlockInvocation");
-		localBlock = [_DTXIPCRemoteBlockRegistry remoteBlockForIdentifier:blockId distantObject:NULL];
+        if (localBlock == nil) {
+            [connection _failWithMissingRemoteBlock:blockId];
+            return nil;
+        }
 		methodSignature = [NSMethodSignature signatureWithObjCTypes:_Block_signature(localBlock)];
 	}
 	else
@@ -459,6 +481,7 @@ static void _decodeInvocation(NSDictionary* serialized, NSInvocation* invocation
 		rv.selector = selector;
 	}
 	
+    [rv retainArguments];
 	return rv;
 }
 

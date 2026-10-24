@@ -21,6 +21,8 @@
 @interface DTXIPCConnection ()
 
 @property (readonly, getter=isValid) BOOL valid;
+@property (atomic, strong, nullable) NSError* failureError;
+- (void)_failWithMissingRemoteBlock:(nullable NSString*)identifier;
 
 @property (nonatomic, getter=isSlave) BOOL slave;
 

@@ -16,7 +16,7 @@
 @import ObjectiveC;
 @import Darwin;
 
-#define _ERROR_OR_ASSERT(condition, ...) if((condition) == NO) { if(_errorBlock != nil) { _errorBlock([NSError errorWithDomain:DTXIPCErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:__VA_ARGS__]}]); } else { NSAssert(condition, __VA_ARGS__); } }
+#define _ERROR_OR_ASSERT(condition, ...) if((condition) == NO) { if(_errorBlock != nil) { _errorBlock(_connection.failureError ?: [NSError errorWithDomain:DTXIPCErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:__VA_ARGS__]}]); } else { NSAssert(condition, __VA_ARGS__); } }
 #define ERROR_OR_ASSERT_V(condition, ...) _ERROR_OR_ASSERT(condition, __VA_ARGS__); if((condition) == NO) { return; }
 #define ERROR_OR_ASSERT_NV(condition, ...) _ERROR_OR_ASSERT(condition, __VA_ARGS__); if((condition) == NO) { return nil; }
 
@@ -71,6 +71,7 @@
 
 - (void)forwardInvocation:(NSInvocation *)invocation
 {
+    ERROR_OR_ASSERT_V(_connection.isValid, @"Connection %@ is invalid.", _connection);
 	if(_synchronous)
 	{
 		ERROR_OR_ASSERT_V(_pendingDispatchGroup == nil, @"You must not send messages from multiple threads to synchronous proxies.");
@@ -80,7 +81,6 @@
 	
 	NSDictionary* serialized = [invocation _dtx_serializedDictionaryForDistantObject:self];
 
-	ERROR_OR_ASSERT_V(_connection.isValid, @"Connection %@ is invalid.", _connection);
 	[_connection.otherConnection.rootProxy _invokeFromRemote:serialized];
 
 	if(_synchronous)
@@ -99,7 +99,7 @@
 				} @catch (NSException *exception) {
 					if(_errorBlock)
 					{
-						_errorBlock([NSError errorWithDomain:DTXIPCErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey: exception.reason}]);
+						_errorBlock(_connection.failureError ?: [NSError errorWithDomain:DTXIPCErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey: exception.reason}]);
 					}
 					else
 					{
@@ -109,6 +109,17 @@
 				}
 			}
 		} while(somethingWentWrong == NO && didEndWaiting == NO);
+
+        NSError* failure = _connection.failureError;
+        if (didEndWaiting && failure != nil) {
+            _pendingDispatchGroup = nil;
+            pthread_mutex_lock(&_pendingMutex);
+            [_pendingRemoteBlocks removeAllObjects];
+            pthread_mutex_unlock(&_pendingMutex);
+            if (_errorBlock) { _errorBlock(failure); }
+            else { [NSException raise:NSInternalInconsistencyException format:@"%@", failure.localizedDescription]; }
+            return;
+        }
 
 		if(didEndWaiting)
 		{
@@ -123,24 +134,12 @@
 	}
 }
 
-- (void)_enterReplyBlock
+- (dispatch_group_t)_enterReplyGroup
 {
-	if(_synchronous == NO)
-	{
-		return;
-	}
-	
-	dispatch_group_enter(_pendingDispatchGroup);
-}
-
-- (void)_leavelReplyBlock
-{
-	if(_synchronous == NO)
-	{
-		return;
-	}
-	
-	dispatch_group_leave(_pendingDispatchGroup);
+    if (_synchronous == NO) { return nil; }
+    dispatch_group_t group = _pendingDispatchGroup;
+    dispatch_group_enter(group);
+    return group;
 }
 
 - (BOOL)_enqueueSynchronousExportedObjectInvocation:(_DTXIPCExportedObject*)object

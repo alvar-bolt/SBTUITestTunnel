@@ -18,7 +18,9 @@ extern void* _DTXRemoteBlockIdentifierKey;
 
 - (NSDictionary*)_dtx_serializedDictionaryForDistantObject:(nullable _DTXIPCDistantObject*)distantObject;
 
-+ (instancetype)_dtx_invocationWithSerializedDictionary:(NSDictionary*)serialized remoteConnection:(DTXIPCConnection*)connection;
++ (nullable instancetype)_dtx_invocationWithSerializedDictionary:(NSDictionary*)serialized remoteConnection:(DTXIPCConnection*)connection;
+
++ (nullable instancetype)_dtx_invocationWithSerializedDictionary:(NSDictionary*)serialized remoteConnection:(DTXIPCConnection*)connection resolvedBlock:(nullable id)localBlock;
 
 @end
 

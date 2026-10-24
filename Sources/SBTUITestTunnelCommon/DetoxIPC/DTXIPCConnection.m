@@ -296,6 +296,14 @@ static dispatch_queue_t _connectionQueue;
 	[_otherConnection invalidate];
 }
 
+- (void)_failWithMissingRemoteBlock:(NSString*)identifier
+{
+    NSString* description = [NSString stringWithFormat:@"IPC callback %@ is no longer registered.", identifier ?: @"<missing>"];
+    self.failureError = [NSError errorWithDomain:DTXIPCErrorDomain code:2 userInfo:@{NSLocalizedDescriptionKey: description}];
+    NSLog(@"[DTXIPC] event=missing_remote_block callback_id=%@ action=invalidate", identifier ?: @"<missing>");
+    [self invalidate];
+}
+
 - (BOOL)isValid
 {
     __block BOOL ret = NO;
@@ -346,13 +354,19 @@ static dispatch_queue_t _connectionQueue;
 
 - (oneway void)_invokeRemoteBlock:(NSDictionary*)serializedBlock
 {
-	_DTXIPCDistantObject* distantObject;
-	id localBlock = [_DTXIPCRemoteBlockRegistry remoteBlockForIdentifier:serializedBlock[@"remoteBlockIdentifier"] distantObject:&distantObject];
-	_DTXIPCExportedObject* exportedObj = [_DTXIPCExportedObject _exportedObjectWithObject:localBlock connection:self serializedInvocation:serializedBlock];
-	if([distantObject _enqueueSynchronousExportedObjectInvocation:exportedObj] == NO)
-	{
-		[exportedObj invoke];
-	}
+    @autoreleasepool {
+        NSString* identifier = serializedBlock[@"remoteBlockIdentifier"];
+        _DTXIPCRemoteBlockSnapshot* snapshot = identifier ? [_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier] : nil;
+        if (snapshot == nil) {
+            [self _failWithMissingRemoteBlock:identifier];
+            return;
+        }
+        _DTXIPCExportedObject* exportedObj = [_DTXIPCExportedObject _exportedObjectWithObject:snapshot.block connection:self serializedInvocation:serializedBlock];
+        if (exportedObj == nil) { return; }
+        if ([snapshot.distantObject _enqueueSynchronousExportedObjectInvocation:exportedObj] == NO) {
+            [exportedObj invoke];
+        }
+    }
 }
 
 - (oneway void)_cleanupRemoteBlock:(NSString*)identifier
