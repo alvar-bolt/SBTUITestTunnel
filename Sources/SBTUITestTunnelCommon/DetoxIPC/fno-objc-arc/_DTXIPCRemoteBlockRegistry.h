@@ -25,6 +25,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (oneway void)retainRemoteBlock:(NSString*)identifier;
 + (oneway void)releaseRemoteBlock:(NSString*)identifier;
 
+// Fixed-size DEBUG Simulator history stores primitive values, never callback objects.
++ (BOOL)lifetimeTracingEnabled;
++ (void)recordLifetimeEvent:(const char*)event identifier:(nullable NSString*)identifier value:(NSInteger)value;
++ (NSDictionary*)lifetimeHistoryForIdentifier:(nullable NSString*)identifier;
++ (void)dumpLifetimeHistoryForIdentifier:(nullable NSString*)identifier reason:(NSString*)reason;
+
 @end
 
 NS_ASSUME_NONNULL_END

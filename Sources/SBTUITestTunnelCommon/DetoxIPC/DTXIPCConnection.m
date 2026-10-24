@@ -301,6 +301,17 @@ static dispatch_queue_t _connectionQueue;
     NSString* description = [NSString stringWithFormat:@"IPC callback %@ is no longer registered.", identifier ?: @"<missing>"];
     self.failureError = [NSError errorWithDomain:DTXIPCErrorDomain code:2 userInfo:@{NSLocalizedDescriptionKey: description}];
     NSLog(@"[DTXIPC] event=missing_remote_block callback_id=%@ action=invalidate", identifier ?: @"<missing>");
+    if ([_DTXIPCRemoteBlockRegistry lifetimeTracingEnabled]) {
+        [_DTXIPCRemoteBlockRegistry dumpLifetimeHistoryForIdentifier:identifier reason:@"missing_callback_receiver"];
+        // Failure-path, one-way best effort only. The peer dump can be lost during invalidation;
+        // absence of that dump is incomplete coverage, not evidence that it sent no callback.
+        if (identifier) {
+            @try { [(id<_DTXIPCImpl>)self.otherConnection.rootProxy _dumpRemoteBlockHistory:identifier]; }
+            @catch (__unused NSException* exception) {
+                NSLog(@"[DTXIPC_LIFETIME] event=peer_history_request_failed callback_id=%@", identifier);
+            }
+        }
+    }
     [self invalidate];
 }
 
@@ -356,6 +367,7 @@ static dispatch_queue_t _connectionQueue;
 {
     @autoreleasepool {
         NSString* identifier = serializedBlock[@"remoteBlockIdentifier"];
+        [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_entered" identifier:identifier value:0];
         _DTXIPCRemoteBlockSnapshot* snapshot = identifier ? [_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier] : nil;
         if (snapshot == nil) {
             [self _failWithMissingRemoteBlock:identifier];
@@ -365,13 +377,24 @@ static dispatch_queue_t _connectionQueue;
         if (exportedObj == nil) { return; }
         if ([snapshot.distantObject _enqueueSynchronousExportedObjectInvocation:exportedObj] == NO) {
             [exportedObj invoke];
+            [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_invoked" identifier:identifier value:0];
+        } else {
+            [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_enqueued" identifier:identifier value:0];
         }
     }
 }
 
 - (oneway void)_cleanupRemoteBlock:(NSString*)identifier
 {
+    [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"cleanup_received" identifier:identifier value:0];
 	[_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier];
+}
+
+- (oneway void)_dumpRemoteBlockHistory:(NSString*)identifier
+{
+    @autoreleasepool {
+        [_DTXIPCRemoteBlockRegistry dumpLifetimeHistoryForIdentifier:identifier reason:@"peer_requested_sender"];
+    }
 }
 
 - (BOOL)_ping

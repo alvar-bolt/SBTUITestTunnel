@@ -1,4 +1,5 @@
 #import <XCTest/XCTest.h>
+#import "../../../Sources/SBTUITestTunnelCommon/DetoxIPC/fno-objc-arc/NSInvocation+DTXRemoteSerialization.h"
 #import "../../../Sources/SBTUITestTunnelCommon/DetoxIPC/DTXIPCConnection.h"
 #import "../../../Sources/SBTUITestTunnelCommon/DetoxIPC/fno-objc-arc/_DTXIPCRemoteBlockRegistry.h"
 #import "../../../Sources/SBTUITestTunnelClient/include/SBTUITestTunnelClient.h"
@@ -84,6 +85,22 @@
 - (oneway void)_invokeFromRemote:(NSDictionary*)invocation;
 @end
 
+@interface IPCLiveAsyncReplyPeer : NSObject <IPCFailureFixtureProtocol>
+@end
+@implementation IPCLiveAsyncReplyPeer
+- (void)requestWithReply:(void (^)(void))reply
+{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool { reply(); }
+    });
+}
+- (void)requestWithReply:(void (^)(void))reply otherReply:(void (^)(void))other
+{
+    [self requestWithReply:reply];
+    [self requestWithReply:other];
+}
+@end
+
 @interface IPCFailureFixtureConnection : IPCRegressionConnection
 @property (nonatomic) BOOL fixtureValid;
 @property (nonatomic, strong) IPCFailureFixturePeer* fixturePeer;
@@ -101,6 +118,12 @@
 
 @implementation IPCFailureFixturePeer
 - (id)rootProxy { return self; }
+- (oneway void)_dumpRemoteBlockHistory:(NSString*)identifier
+{
+    [_DTXIPCRemoteBlockRegistry dumpLifetimeHistoryForIdentifier:identifier reason:@"fixture_peer"];
+}
+- (oneway void)_invokeRemoteBlock:(NSDictionary*)serialized { [self.owner _invokeRemoteBlock:serialized]; }
+- (oneway void)_cleanupRemoteBlock:(NSString*)identifier { [_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier]; }
 - (BOOL)_ping
 {
     if (self.owner.fixtureValid == NO) { [NSException raise:@"IPCFixtureInvalidated" format:@"Fixture connection was invalidated"]; }
@@ -417,6 +440,101 @@
     XCTAssertNotNil(connection.fixturePeer.heldIdentifier);
     XCTAssertNoThrow([_DTXIPCRemoteBlockRegistry releaseRemoteBlock:connection.fixturePeer.heldIdentifier]);
     [connection invalidate];
+}
+
+- (void)testCopiedForwardingReplySurvivesInvocationAndAutoreleasePool
+{
+    IPCFailureFixtureConnection* connection = [[IPCFailureFixtureConnection alloc] initWithServiceName:NSUUID.UUID.UUIDString];
+    connection.fixtureValid = YES;
+    connection.fixturePeer = [IPCFailureFixturePeer new];
+    connection.fixturePeer.owner = connection;
+    IPCForwardingBlockReceiver* receiver = [IPCForwardingBlockReceiver new];
+    __block NSInteger replies = 0;
+    __block NSString* identifier = nil;
+    @autoreleasepool {
+        void (^reply)(void) = ^{ replies += 1; };
+        NSInvocation* invocation = [NSInvocation invocationWithMethodSignature:[receiver methodSignatureForSelector:@selector(captureReply:)]];
+        invocation.selector = @selector(captureReply:);
+        [invocation setArgument:&reply atIndex:2];
+        NSDictionary* serialized = [invocation _dtx_serializedDictionaryForDistantObject:nil];
+        identifier = serialized[@"arguments"][2][@"remoteIdentifier"];
+        id exported = [_DTXIPCExportedObject _exportedObjectWithObject:receiver connection:connection serializedInvocation:serialized];
+        [exported invoke];
+        XCTAssertNotNil(receiver.reply);
+    }
+    XCTAssertNotNil([_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier], @"An asynchronously retained forwarding copy must still own the registry entry");
+    receiver.reply();
+    XCTAssertEqual(replies, 1);
+    XCTAssertTrue(connection.fixtureValid);
+    @autoreleasepool { receiver.reply = nil; }
+    XCTAssertNil([_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier]);
+    [connection invalidate];
+}
+
+- (void)testLiveNSConnectionAsyncReplyCleanupOrdering
+{
+    NSString* service = NSUUID.UUID.UUIDString;
+    DTXIPCConnection* server = [[DTXIPCConnection alloc] initWithServiceName:service];
+    server.exportedInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    server.exportedObject = [IPCLiveAsyncReplyPeer new];
+    [server resume];
+    DTXIPCConnection* client = [[DTXIPCConnection alloc] initWithServiceName:service];
+    client.remoteObjectInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    [client resume];
+    __block NSInteger errors = 0;
+    __block NSInteger replies = 0;
+    id<IPCFailureFixtureProtocol> proxy = [client synchronousRemoteObjectProxyWithErrorHandler:^(NSError* error) { errors += 1; }];
+    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:45];
+    NSInteger requests = 0;
+    while (requests < 1000 && errors == 0 && deadline.timeIntervalSinceNow > 0) {
+        @autoreleasepool {
+            [proxy requestWithReply:^{ replies += 1; }];
+            requests += 1;
+        }
+    }
+    [client invalidate];
+    [server invalidate];
+    XCTAssertEqual(errors, 0);
+    XCTAssertEqual(requests, 1000);
+    XCTAssertEqual(replies, requests);
+}
+
+- (void)testLifetimeHistoryPreservesRemovalBeforeMissingDelivery
+{
+    XCTAssertTrue([_DTXIPCRemoteBlockRegistry lifetimeTracingEnabled]);
+    NSString* identifier = [_DTXIPCRemoteBlockRegistry registerRemoteBlock:^{} distantObject:nil];
+    [_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier];
+    XCTAssertNil([_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier]);
+    NSDictionary* history = [_DTXIPCRemoteBlockRegistry lifetimeHistoryForIdentifier:identifier];
+    NSArray* events = history[@"events"];
+    XCTAssertEqualObjects([events valueForKey:@"event"], (@[@"registered", @"released", @"removed", @"snapshot_miss"]));
+    XCTAssertEqualObjects([events valueForKey:@"value"], (@[@1, @0, @0, @0]));
+    uint64_t previous = 0;
+    for (NSDictionary* event in events) {
+        XCTAssertGreaterThan([event[@"sequence"] unsignedLongLongValue], previous);
+        XCTAssertGreaterThan([event[@"monotonic_raw_ns"] unsignedLongLongValue], 0ull);
+        XCTAssertEqualObjects(event[@"callback_id"], identifier);
+        XCTAssertEqualObjects(event[@"identifier_truncated"], @NO);
+        previous = [event[@"sequence"] unsignedLongLongValue];
+    }
+}
+
+- (void)testLifetimeHistoryHasExplicitRingAndDumpBounds
+{
+    NSString* identifier = NSUUID.UUID.UUIDString;
+    for (NSInteger index = 0; index < 1100; index++) {
+        [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"bounded_fixture" identifier:identifier value:index];
+    }
+    NSDictionary* history = [_DTXIPCRemoteBlockRegistry lifetimeHistoryForIdentifier:identifier];
+    NSArray* events = history[@"events"];
+    XCTAssertEqualObjects(history[@"enabled"], @YES);
+    XCTAssertEqualObjects(history[@"capacity"], @1024);
+    XCTAssertGreaterThan([history[@"overwritten_entries"] integerValue], 0);
+    XCTAssertEqual([history[@"omitted_matching_entries"] integerValue], 960);
+    XCTAssertEqual(events.count, 64u);
+    XCTAssertEqualObjects(events.firstObject[@"value"], @1036);
+    XCTAssertEqualObjects(events.lastObject[@"value"], @1099);
+    XCTAssertEqualObjects(events.lastObject[@"sequence"], history[@"last_sequence"]);
 }
 
 @end

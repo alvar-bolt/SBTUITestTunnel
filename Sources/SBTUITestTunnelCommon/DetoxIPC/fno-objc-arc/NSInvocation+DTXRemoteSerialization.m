@@ -278,6 +278,7 @@ static id _decodeObject(NSDictionary* encodedObj, DTXIPCConnection* connection)
 	{
 		const char* signature = [encodedObj[@"signature"] UTF8String];
 		NSString* remoteIdentifier = encodedObj[@"remoteIdentifier"];
+		[_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"forwarder_created" identifier:remoteIdentifier value:0];
 		
 		id localForwardingBlock = __NSMakeSpecialForwardingCaptureBlock(signature, ^(NSInvocation *inv) {
             if (connection.isValid == NO) {
@@ -286,8 +287,10 @@ static id _decodeObject(NSDictionary* encodedObj, DTXIPCConnection* connection)
             }
             objc_setAssociatedObject(inv, _DTXRemoteBlockIdentifierKey, remoteIdentifier, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             NSDictionary* serialized = [inv _dtx_serializedDictionaryForDistantObject:nil];
+            [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"callback_send_started" identifier:remoteIdentifier value:0];
             @try {
                 [connection.otherConnection.rootProxy _invokeRemoteBlock:serialized];
+                [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"callback_send_returned" identifier:remoteIdentifier value:0];
             } @catch (NSException* exception) {
                 if (connection.isValid) { [exception raise]; }
             }
@@ -301,7 +304,9 @@ static id _decodeObject(NSDictionary* encodedObj, DTXIPCConnection* connection)
             // Cleanup has no reply to deliver; disconnection must not turn deallocation into a crash.
             if (connection.isValid) {
                 @try {
+                    [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"cleanup_send_started" identifier:remoteIdentifier value:0];
                     [connection.otherConnection.rootProxy _cleanupRemoteBlock:remoteIdentifier];
+                    [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"cleanup_send_returned" identifier:remoteIdentifier value:0];
                 } @catch (NSException* exception) {
                     if (connection.isValid) { [exception raise]; }
                 }
