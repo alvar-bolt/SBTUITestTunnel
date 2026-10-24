@@ -185,6 +185,7 @@ static dispatch_queue_t _connectionQueue;
 {
 	dispatch_queue_t _dispatchQueue;
     dispatch_queue_t _otherConnectionQueue;
+    dispatch_queue_t _callbackQueue;
     
 	NSRunLoop* _runLoop;
 	NSString* _actualServiceName;
@@ -227,6 +228,7 @@ static dispatch_queue_t _connectionQueue;
 		
 		_dispatchQueue = dispatch_queue_create([NSString stringWithFormat:@"com.wix.DTXIPCConnection:%@", _serviceName].UTF8String, dispatch_queue_attr_make_with_autorelease_frequency(NULL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
         _otherConnectionQueue = dispatch_queue_create([NSString stringWithFormat:@"com.wix.DTXIPCOtherConnection:%@", _serviceName].UTF8String, NULL);
+        _callbackQueue = dispatch_queue_create([NSString stringWithFormat:@"com.wix.DTXIPCCallback:%@", _serviceName].UTF8String, dispatch_queue_attr_make_with_autorelease_frequency(NULL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
         
 		//Attempt becoming a master
 		if([self _commonInit] == NO)
@@ -363,7 +365,7 @@ static dispatch_queue_t _connectionQueue;
 	[exportedObj invoke];
 }
 
-- (oneway void)_invokeRemoteBlock:(NSDictionary*)serializedBlock
+- (BOOL)_invokeRemoteBlock:(NSDictionary*)serializedBlock
 {
     @autoreleasepool {
         NSString* identifier = serializedBlock[@"remoteBlockIdentifier"];
@@ -371,16 +373,23 @@ static dispatch_queue_t _connectionQueue;
         _DTXIPCRemoteBlockSnapshot* snapshot = identifier ? [_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier] : nil;
         if (snapshot == nil) {
             [self _failWithMissingRemoteBlock:identifier];
-            return;
+            return NO;
         }
         _DTXIPCExportedObject* exportedObj = [_DTXIPCExportedObject _exportedObjectWithObject:snapshot.block connection:self serializedInvocation:serializedBlock];
-        if (exportedObj == nil) { return; }
+        if (exportedObj == nil) { return NO; }
         if ([snapshot.distantObject _enqueueSynchronousExportedObjectInvocation:exportedObj] == NO) {
-            [exportedObj invoke];
-            [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_invoked" identifier:identifier value:0];
+            // A receipt must not wait for arbitrary callback code: that code may
+            // make a nested call to the sender that is awaiting this receipt.
+            // exportedObj retains the decoded callback independently of cleanup.
+            dispatch_async(_callbackQueue, ^{
+                [exportedObj invoke];
+                [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_invoked" identifier:identifier value:0];
+            });
         } else {
             [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_enqueued" identifier:identifier value:0];
         }
+        [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"delivery_accepted" identifier:identifier value:0];
+        return YES;
     }
 }
 

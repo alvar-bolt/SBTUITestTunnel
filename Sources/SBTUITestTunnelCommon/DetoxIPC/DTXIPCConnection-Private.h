@@ -12,7 +12,8 @@
 
 - (oneway void)_slaveDidConnectWithName:(NSString*)slaveServiceName;
 - (oneway void)_invokeFromRemote:(NSDictionary*)serializedInvocation;
-- (oneway void)_invokeRemoteBlock:(NSDictionary*)serializedBlock;
+// Receipt is returned after callback ownership has transferred to the receiver.
+- (BOOL)_invokeRemoteBlock:(NSDictionary*)serializedBlock;
 - (oneway void)_cleanupRemoteBlock:(NSString*)identifier;
 - (oneway void)_dumpRemoteBlockHistory:(NSString*)identifier;
 - (BOOL)_ping;

@@ -10,7 +10,9 @@
 
 // These private interfaces belong to the same pinned package under test.
 @interface DTXIPCConnection (CallbackRegistryTests)
-- (oneway void)_invokeRemoteBlock:(NSDictionary*)serializedBlock;
+@property (atomic, strong) NSError* failureError;
+- (BOOL)_invokeRemoteBlock:(NSDictionary*)serializedBlock;
+- (oneway void)_cleanupRemoteBlock:(NSString*)identifier;
 @end
 
 @interface _DTXIPCExportedObject : NSObject
@@ -79,6 +81,7 @@
 @interface IPCFailureFixturePeer : NSObject
 @property (nonatomic, weak) IPCFailureFixtureConnection* owner;
 @property (nonatomic) BOOL cleanupBeforeReply;
+@property (nonatomic) BOOL rejectCallbackDelivery;
 @property (nonatomic) NSInteger requests;
 @property (nonatomic, copy) NSString* heldIdentifier;
 - (id)rootProxy;
@@ -98,6 +101,38 @@
 {
     [self requestWithReply:reply];
     [self requestWithReply:other];
+}
+@end
+
+// Hold an actual NSConnection callback at receiver entry so its later one-way
+// cleanup can overtake acquisition, matching the independently captured CI race.
+@interface IPCDeferredDeliveryConnection : IPCRegressionConnection
+@property (nonatomic, strong) dispatch_semaphore_t deliveryEntered;
+@property (nonatomic, strong) dispatch_semaphore_t allowDelivery;
+@property (nonatomic, strong) dispatch_semaphore_t cleanupReceived;
+@end
+
+@implementation IPCDeferredDeliveryConnection
+- (instancetype)initWithServiceName:(NSString*)serviceName
+{
+    self = [super initWithServiceName:serviceName];
+    if (self) {
+        self.deliveryEntered = dispatch_semaphore_create(0);
+        self.allowDelivery = dispatch_semaphore_create(0);
+        self.cleanupReceived = dispatch_semaphore_create(0);
+    }
+    return self;
+}
+- (BOOL)_invokeRemoteBlock:(NSDictionary*)serializedBlock
+{
+    dispatch_semaphore_signal(self.deliveryEntered);
+    dispatch_semaphore_wait(self.allowDelivery, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    return [super _invokeRemoteBlock:serializedBlock];
+}
+- (oneway void)_cleanupRemoteBlock:(NSString*)identifier
+{
+    dispatch_semaphore_signal(self.cleanupReceived);
+    [super _cleanupRemoteBlock:identifier];
 }
 @end
 
@@ -122,7 +157,10 @@
 {
     [_DTXIPCRemoteBlockRegistry dumpLifetimeHistoryForIdentifier:identifier reason:@"fixture_peer"];
 }
-- (oneway void)_invokeRemoteBlock:(NSDictionary*)serialized { [self.owner _invokeRemoteBlock:serialized]; }
+- (BOOL)_invokeRemoteBlock:(NSDictionary*)serialized
+{
+    return self.rejectCallbackDelivery ? NO : [self.owner _invokeRemoteBlock:serialized];
+}
 - (oneway void)_cleanupRemoteBlock:(NSString*)identifier { [_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier]; }
 - (BOOL)_ping
 {
@@ -451,8 +489,9 @@
     IPCForwardingBlockReceiver* receiver = [IPCForwardingBlockReceiver new];
     __block NSInteger replies = 0;
     __block NSString* identifier = nil;
+    XCTestExpectation* delivered = [self expectationWithDescription:@"copied callback delivered"];
     @autoreleasepool {
-        void (^reply)(void) = ^{ replies += 1; };
+        void (^reply)(void) = ^{ replies += 1; [delivered fulfill]; };
         NSInvocation* invocation = [NSInvocation invocationWithMethodSignature:[receiver methodSignatureForSelector:@selector(captureReply:)]];
         invocation.selector = @selector(captureReply:);
         [invocation setArgument:&reply atIndex:2];
@@ -464,6 +503,7 @@
     }
     XCTAssertNotNil([_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier], @"An asynchronously retained forwarding copy must still own the registry entry");
     receiver.reply();
+    [self waitForExpectations:@[delivered] timeout:5];
     XCTAssertEqual(replies, 1);
     XCTAssertTrue(connection.fixtureValid);
     @autoreleasepool { receiver.reply = nil; }
@@ -497,6 +537,133 @@
     XCTAssertEqual(errors, 0);
     XCTAssertEqual(requests, 1000);
     XCTAssertEqual(replies, requests);
+}
+
+- (void)testLiveNSConnectionCleanupCannotOvertakeDeferredCallbackAcquisition
+{
+    NSString* service = NSUUID.UUID.UUIDString;
+    DTXIPCConnection* server = [[DTXIPCConnection alloc] initWithServiceName:service];
+    server.exportedInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    server.exportedObject = [IPCLiveAsyncReplyPeer new];
+    [server resume];
+    IPCDeferredDeliveryConnection* client = [[IPCDeferredDeliveryConnection alloc] initWithServiceName:service];
+    client.remoteObjectInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    [client resume];
+
+    XCTestExpectation* requestFinished = [self expectationWithDescription:@"request finished"];
+    XCTestExpectation* gateFinished = [self expectationWithDescription:@"receiver gate observed"];
+    __block NSInteger errors = 0;
+    __block NSInteger replies = 0;
+    __block BOOL deliveryWasEntered = NO;
+    __block BOOL cleanupOvertookDelivery = NO;
+    id<IPCFailureFixtureProtocol> proxy = [client synchronousRemoteObjectProxyWithErrorHandler:^(NSError* error) { errors += 1; }];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [proxy requestWithReply:^{ replies += 1; }];
+        [requestFinished fulfill];
+    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        deliveryWasEntered = dispatch_semaphore_wait(client.deliveryEntered, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+        if (deliveryWasEntered) {
+            // This bounded test-only gate amplifies message reordering; production
+            // transport must hold ownership rather than depend on this interval.
+            cleanupOvertookDelivery = dispatch_semaphore_wait(client.cleanupReceived, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC)) == 0;
+        }
+        dispatch_semaphore_signal(client.allowDelivery);
+        [gateFinished fulfill];
+    });
+    [self waitForExpectations:@[requestFinished, gateFinished] timeout:10];
+    [client invalidate];
+    [server invalidate];
+    XCTAssertTrue(deliveryWasEntered);
+    XCTAssertFalse(cleanupOvertookDelivery, @"Callback cleanup must wait until the receiver has acquired delivery ownership");
+    XCTAssertEqual(errors, 0);
+    XCTAssertEqual(replies, 1);
+}
+
+- (void)testReceiptDoesNotWaitForAsyncCallbackAndInvocationSurvivesCleanup
+{
+    IPCRegressionConnection* connection = [[IPCRegressionConnection alloc] initWithServiceName:NSUUID.UUID.UUIDString];
+    dispatch_semaphore_t callbackEntered = dispatch_semaphore_create(0);
+    dispatch_semaphore_t allowCallback = dispatch_semaphore_create(0);
+    XCTestExpectation* delivered = [self expectationWithDescription:@"asynchronous callback completed"];
+    __weak NSObject* weakToken = nil;
+    NSString* identifier = nil;
+    @autoreleasepool {
+        NSObject* token = [NSObject new];
+        weakToken = token;
+        identifier = [_DTXIPCRemoteBlockRegistry registerRemoteBlock:^{
+            XCTAssertNotNil(token);
+            dispatch_semaphore_signal(callbackEntered);
+            dispatch_semaphore_wait(allowCallback, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+            [delivered fulfill];
+        } distantObject:nil];
+    }
+    NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+    XCTAssertTrue([connection _invokeRemoteBlock:[self invocationForIdentifier:identifier]]);
+    XCTAssertLessThan(NSProcessInfo.processInfo.systemUptime - started, 2.0, @"Receipt must not wait for the callback body");
+    XCTAssertEqual(dispatch_semaphore_wait(callbackEntered, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)), 0l);
+    [_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier];
+    XCTAssertNil([_DTXIPCRemoteBlockRegistry snapshotForIdentifier:identifier]);
+    XCTAssertNotNil(weakToken, @"Transferred invocation must retain the callback across registry cleanup");
+    dispatch_semaphore_signal(allowCallback);
+    [self waitForExpectations:@[delivered] timeout:5];
+    XCTestExpectation* released = [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary* bindings) {
+        return weakToken == nil;
+    }] evaluatedWithObject:connection handler:nil];
+    [self waitForExpectations:@[released] timeout:5];
+    [connection invalidate];
+}
+
+- (void)testLiveAsyncCallbackCanMakeNestedSynchronousRequest
+{
+    NSString* service = NSUUID.UUID.UUIDString;
+    DTXIPCConnection* server = [[DTXIPCConnection alloc] initWithServiceName:service];
+    server.exportedInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    server.exportedObject = [IPCLiveAsyncReplyPeer new];
+    [server resume];
+    DTXIPCConnection* client = [[DTXIPCConnection alloc] initWithServiceName:service];
+    client.remoteObjectInterface = [DTXIPCInterface interfaceWithProtocol:@protocol(IPCFailureFixtureProtocol)];
+    [client resume];
+    __block NSInteger errors = 0;
+    __block NSInteger replies = 0;
+    void (^onError)(NSError*) = ^(NSError* error) { @synchronized (client) { errors += 1; } };
+    id<IPCFailureFixtureProtocol> asynchronous = [client remoteObjectProxyWithErrorHandler:onError];
+    id<IPCFailureFixtureProtocol> synchronous = [client synchronousRemoteObjectProxyWithErrorHandler:onError];
+    XCTestExpectation* nestedReply = [self expectationWithDescription:@"nested synchronous reply from async callback"];
+    [asynchronous requestWithReply:^{
+        [synchronous requestWithReply:^{ replies += 1; }];
+        [nestedReply fulfill];
+    }];
+    [self waitForExpectations:@[nestedReply] timeout:10];
+    [client invalidate];
+    [server invalidate];
+    XCTAssertEqual(errors, 0);
+    XCTAssertEqual(replies, 1);
+}
+
+- (void)testRejectedCallbackReceiptInvalidatesSenderWithExplicitError
+{
+    IPCFailureFixtureConnection* connection = [[IPCFailureFixtureConnection alloc] initWithServiceName:NSUUID.UUID.UUIDString];
+    connection.fixtureValid = YES;
+    connection.fixturePeer = [IPCFailureFixturePeer new];
+    connection.fixturePeer.owner = connection;
+    connection.fixturePeer.rejectCallbackDelivery = YES;
+    IPCForwardingBlockReceiver* receiver = [IPCForwardingBlockReceiver new];
+    void (^reply)(void) = ^{ XCTFail(@"Rejected callback must not be invoked"); };
+    NSInvocation* invocation = [NSInvocation invocationWithMethodSignature:[receiver methodSignatureForSelector:@selector(captureReply:)]];
+    invocation.selector = @selector(captureReply:);
+    [invocation setArgument:&reply atIndex:2];
+    NSDictionary* serialized = [invocation _dtx_serializedDictionaryForDistantObject:nil];
+    NSString* identifier = serialized[@"arguments"][2][@"remoteIdentifier"];
+    id exported = [_DTXIPCExportedObject _exportedObjectWithObject:receiver connection:connection serializedInvocation:serialized];
+    [exported invoke];
+    receiver.reply();
+    XCTAssertFalse(connection.fixtureValid);
+    XCTAssertEqualObjects(connection.failureError.domain, DTXIPCErrorDomain);
+    XCTAssertEqual(connection.failureError.code, 4);
+    XCTAssertTrue([connection.failureError.localizedDescription containsString:@"not accepted"]);
+    XCTAssertNoThrow(receiver.reply = nil, @"Rejected delivery cleanup must tolerate the invalidated connection");
+    [_DTXIPCRemoteBlockRegistry releaseRemoteBlock:identifier];
 }
 
 - (void)testLifetimeHistoryPreservesRemovalBeforeMissingDelivery

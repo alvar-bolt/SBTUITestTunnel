@@ -289,7 +289,15 @@ static id _decodeObject(NSDictionary* encodedObj, DTXIPCConnection* connection)
             NSDictionary* serialized = [inv _dtx_serializedDictionaryForDistantObject:nil];
             [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"callback_send_started" identifier:remoteIdentifier value:0];
             @try {
-                [connection.otherConnection.rootProxy _invokeRemoteBlock:serialized];
+                // The forwarding block's cleanup must not overtake acquisition
+                // of this invocation on the receiving connection.
+                BOOL accepted = [connection.otherConnection.rootProxy _invokeRemoteBlock:serialized];
+                if (accepted == NO) {
+                    connection.failureError = [NSError errorWithDomain:DTXIPCErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey: @"IPC callback delivery was not accepted."}];
+                    NSLog(@"[DTXIPC] event=callback_not_accepted callback_id=%@ action=invalidate", remoteIdentifier);
+                    [connection invalidate];
+                    return;
+                }
                 [_DTXIPCRemoteBlockRegistry recordLifetimeEvent:"callback_send_returned" identifier:remoteIdentifier value:0];
             } @catch (NSException* exception) {
                 if (connection.isValid) { [exception raise]; }
