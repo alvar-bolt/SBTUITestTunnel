@@ -21,6 +21,11 @@
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#import <TargetConditionals.h>
+
+#if DEBUG && TARGET_OS_SIMULATOR
+#include <stdatomic.h>
+#endif
 
 const NSString *SBTUITunnelJsonMimeType = @"application/json";
 #define kSBTUITestTunnelErrorDomain @"com.subito.sbtuitesttunnel.error"
@@ -29,6 +34,11 @@ const NSString *SBTUITunnelJsonMimeType = @"application/json";
 {
     BOOL _userInterfaceAnimationsEnabled;
     NSInteger _userInterfaceAnimationSpeed;
+#if DEBUG && TARGET_OS_SIMULATOR
+    BOOL _uiTestStartupTraceEnabled;
+    uint64_t _uiTestStartupTraceEpoch;
+    NSUInteger _uiTestStartupTraceSequence;
+#endif
 }
 
 @property (nonatomic, weak) XCUIApplication *application;
@@ -52,6 +62,48 @@ const NSString *SBTUITunnelJsonMimeType = @"application/json";
 
 static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
 
+// BEGIN UI_TEST_IPC_STARTUP_TRACE
+#if DEBUG && TARGET_OS_SIMULATOR
+static atomic_uint_fast64_t SBTStartupTraceEpoch;
+static atomic_uint_fast64_t SBTStartupTraceRecords;
+
+- (void)beginUITestStartupTrace:(NSDictionary<NSString *, NSString *> *)environment useIPC:(BOOL)useIPC
+{
+    if (![NSThread isMainThread]) { return; }
+    // UITEST belongs to the launched application's environment, not necessarily
+    // the XCTest Runner's own environment.
+    _uiTestStartupTraceEnabled = useIPC && environment[@"UITEST"] != nil &&
+        [environment[@"UI_TEST_XPC_DIAGNOSTICS"] isEqualToString:@"1"];
+    _uiTestStartupTraceSequence = 0;
+    _uiTestStartupTraceEpoch = _uiTestStartupTraceEnabled
+        ? atomic_fetch_add_explicit(&SBTStartupTraceEpoch, 1, memory_order_relaxed) + 1 : 0;
+    [self recordUITestStartupEvent:"launch" sourceEpoch:_uiTestStartupTraceEpoch resultYes:-1 elapsed:-1];
+}
+
+- (void)recordUITestStartupEvent:(const char *)event sourceEpoch:(uint64_t)sourceEpoch
+                     resultYes:(int)resultYes elapsed:(NSTimeInterval)elapsed
+{
+    // All launch/callback observations are on the original main caller. A reset
+    // from another thread is outside this diagnostic's coverage.
+    if (![NSThread isMainThread]) { return; }
+    if (!_uiTestStartupTraceEnabled || _uiTestStartupTraceSequence >= 8) { return; }
+    uint64_t slot = atomic_fetch_add_explicit(&SBTStartupTraceRecords, 1, memory_order_relaxed);
+    if (slot >= 64) { return; }
+    _uiTestStartupTraceSequence += 1;
+    // The final available record announces the bound instead of silently losing
+    // the event that would have occupied it. No loop polling is recorded.
+    if (slot == 63) { event = "process_cap"; }
+    else if (_uiTestStartupTraceSequence == 8) { event = "launch_cap"; }
+    if (elapsed == -1) { elapsed = CFAbsoluteTimeGetCurrent() - self.launchStart; }
+    NSLog(@"[UI_TEST_IPC_STARTUP] event=%s pid=%d client=%p epoch=%llu source_epoch=%llu seq=%lu main=%d flag=%d result_yes=%d error_present=%d elapsed_s=%.6f timeout_s=%.6f uptime_s=%.6f",
+          event, getpid(), self, (unsigned long long)_uiTestStartupTraceEpoch,
+          (unsigned long long)sourceEpoch, (unsigned long)_uiTestStartupTraceSequence,
+          [NSThread isMainThread], self.startupCompleted, resultYes, self.ipcRequestError != nil,
+          elapsed, SBTUITunneledApplicationDefaultTimeout, NSProcessInfo.processInfo.systemUptime);
+}
+#endif
+// END UI_TEST_IPC_STARTUP_TRACE
+
 - (instancetype)initWithApplication:(XCUIApplication *)application
 {
     self = [super init];
@@ -71,6 +123,9 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
 
 - (void)resetInternalState
 {
+#if DEBUG && TARGET_OS_SIMULATOR
+    [self recordUITestStartupEvent:"reset_will_clear_flag" sourceEpoch:_uiTestStartupTraceEpoch resultYes:-1 elapsed:-1];
+#endif
     self.application.launchArguments = self.initialLaunchArguments;
     self.application.launchEnvironment = self.initialLaunchEnvironment;
 
@@ -133,6 +188,10 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
     #else
         useIPC = NO;
     #endif
+
+#if DEBUG && TARGET_OS_SIMULATOR
+    [self beginUITestStartupTrace:launchEnvironment useIPC:useIPC];
+#endif
     
     if (useIPC) {
         NSString *serviceIdentifier = [NSUUID UUID].UUIDString;
@@ -185,11 +244,18 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
     while (YES) {
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
         
-        if (CFAbsoluteTimeGetCurrent() - self.launchStart > SBTUITunneledApplicationDefaultTimeout) {
+        NSTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - self.launchStart;
+        if (elapsed > SBTUITunneledApplicationDefaultTimeout) {
+#if DEBUG && TARGET_OS_SIMULATOR
+            [self recordUITestStartupEvent:"wait_timeout" sourceEpoch:_uiTestStartupTraceEpoch resultYes:-1 elapsed:elapsed];
+#endif
             return [self shutDownWithErrorMessage:[NSString stringWithFormat:@"[SBTUITestTunnel] Waiting for startup block completion timed out"] code:SBTUITestTunnelErrorLaunchFailed];
         }
         
         if (self.startupCompleted) {
+#if DEBUG && TARGET_OS_SIMULATOR
+            [self recordUITestStartupEvent:"wait_completed" sourceEpoch:_uiTestStartupTraceEpoch resultYes:-1 elapsed:elapsed];
+#endif
             break;
         }
     }
@@ -252,6 +318,9 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
 
 - (void)serverDidConnect:(id)sender
 {
+#if DEBUG && TARGET_OS_SIMULATOR
+    const uint64_t startupTraceEpoch = _uiTestStartupTraceEpoch;
+#endif
     while (!self.ipcConnection.isValid) {
         if (CFAbsoluteTimeGetCurrent() - self.launchStart > SBTUITunneledApplicationDefaultTimeout) {
             [self shutDownWithErrorMessage:@"[SBTUITestTunnel] IPC tunnel did fail to connect" code:SBTUITestTunnelErrorConnectionToApplicationFailed];
@@ -265,6 +334,10 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
     dispatch_async(dispatch_get_main_queue(), ^{
         weakSelf.connected = YES;
 
+#if DEBUG && TARGET_OS_SIMULATOR
+        [weakSelf recordUITestStartupEvent:"callback_enter" sourceEpoch:startupTraceEpoch resultYes:-1 elapsed:-1];
+#endif
+
         NSLog(@"[SBTUITestTunnel] IPC tunnel did connect after, %fs", CFAbsoluteTimeGetCurrent() - weakSelf.launchStart);
 
         if (weakSelf.startupBlock) {
@@ -272,7 +345,16 @@ static NSTimeInterval SBTUITunneledApplicationDefaultTimeout = 30.0;
             NSLog(@"[SBTUITestTunnel] Did perform startupBlock");
         }
         
-        weakSelf.startupCompleted = [[weakSelf sendSynchronousRequestWithPath:SBTUITunneledApplicationCommandStartupCommandsCompleted params:@{}] isEqualToString:@"YES"];
+#if DEBUG && TARGET_OS_SIMULATOR
+        [weakSelf recordUITestStartupEvent:"startup_ack_will_send" sourceEpoch:startupTraceEpoch resultYes:-1 elapsed:-1];
+#endif
+        BOOL startupCompleted = NO;
+        // Keep the receiver, RPC, comparison and setter in the original full
+        // expression so observing the primitive result does not split ARC scope.
+        weakSelf.startupCompleted = (startupCompleted = [[weakSelf sendSynchronousRequestWithPath:SBTUITunneledApplicationCommandStartupCommandsCompleted params:@{}] isEqualToString:@"YES"]);
+#if DEBUG && TARGET_OS_SIMULATOR
+        [weakSelf recordUITestStartupEvent:"startup_ack_result" sourceEpoch:startupTraceEpoch resultYes:startupCompleted elapsed:-1];
+#endif
 
         NSLog(@"[SBTUITestTunnel] Tunnel ready after %fs", CFAbsoluteTimeGetCurrent() - weakSelf.launchStart);
     });
