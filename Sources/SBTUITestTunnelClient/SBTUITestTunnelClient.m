@@ -38,6 +38,7 @@ const NSString *SBTUITunnelJsonMimeType = @"application/json";
     BOOL _uiTestStartupTraceEnabled;
     uint64_t _uiTestStartupTraceEpoch;
     NSUInteger _uiTestStartupTraceSequence;
+    NSUInteger _uiTestStubTraceSequence;
 #endif
 }
 
@@ -75,6 +76,7 @@ static atomic_uint_fast64_t SBTStartupTraceRecords;
     _uiTestStartupTraceEnabled = useIPC && environment[@"UITEST"] != nil &&
         [environment[@"UI_TEST_XPC_DIAGNOSTICS"] isEqualToString:@"1"];
     _uiTestStartupTraceSequence = 0;
+    _uiTestStubTraceSequence = 0;
     _uiTestStartupTraceEpoch = _uiTestStartupTraceEnabled
         ? atomic_fetch_add_explicit(&SBTStartupTraceEpoch, 1, memory_order_relaxed) + 1 : 0;
     [self recordUITestStartupEvent:"launch" sourceEpoch:_uiTestStartupTraceEpoch resultYes:-1 elapsed:-1];
@@ -386,8 +388,79 @@ static atomic_uint_fast64_t SBTStartupTraceRecords;
 
 #pragma mark - Stub Commands
 
+// BEGIN UI_TEST_IPC_STUB_TRACE
+#if DEBUG && TARGET_OS_SIMULATOR
+typedef struct {
+    BOOL enabled;
+    BOOL archiveCompleted;
+    BOOL rpcEntered;
+    uint64_t sourceEpoch;
+    NSUInteger sequence;
+    NSTimeInterval started;
+    NSTimeInterval archived;
+} SBTUITestStubTrace;
+
+static atomic_uint_fast64_t SBTStubTraceRecords;
+
+- (void)emitUITestStubTrace:(const char *)event trace:(SBTUITestStubTrace)trace finished:(NSTimeInterval)finished
+{
+    NSTimeInterval archiveMS = trace.archiveCompleted ? (trace.archived - trace.started) * 1000 : -1;
+    NSTimeInterval rpcMS = trace.rpcEntered ? (finished - trace.archived) * 1000 : -1;
+    NSTimeInterval totalMS = trace.enabled ? (finished - trace.started) * 1000 : -1;
+    NSLog(@"[UI_TEST_IPC_STUB] event=%s pid=%d client=%p epoch=%llu source_epoch=%llu seq=%lu main=%d archive_completed=%d rpc_entered=%d started_s=%.6f archived_s=%.6f finished_s=%.6f archive_ms=%.6f rpc_ms=%.6f total_ms=%.6f",
+          event, getpid(), self, (unsigned long long)_uiTestStartupTraceEpoch,
+          (unsigned long long)trace.sourceEpoch, (unsigned long)trace.sequence,
+          [NSThread isMainThread], trace.archiveCompleted, trace.rpcEntered,
+          trace.started, trace.archived, finished, archiveMS, rpcMS, totalMS);
+}
+
+- (SBTUITestStubTrace)beginUITestStubTrace
+{
+    SBTUITestStubTrace trace = {0};
+    trace.started = -1;
+    trace.archived = -1;
+    // Match the existing launch trace's explicit environment/IPC gate. Only
+    // connected startup registrations on their original main caller are covered.
+    if (![NSThread isMainThread] || !_uiTestStartupTraceEnabled || !self.connected ||
+        self.startupCompleted || _uiTestStubTraceSequence >= 128) { return trace; }
+    if (atomic_load_explicit(&SBTStubTraceRecords, memory_order_relaxed) >= 512) { return trace; }
+    uint64_t slot = atomic_fetch_add_explicit(&SBTStubTraceRecords, 1, memory_order_relaxed);
+    trace.sourceEpoch = _uiTestStartupTraceEpoch;
+    trace.sequence = ++_uiTestStubTraceSequence;
+    // Caps consume the final diagnostic slot, never the original registration.
+    if (slot == 511 || trace.sequence == 128) {
+        [self emitUITestStubTrace:slot == 511 ? "process_cap" : "launch_cap" trace:trace finished:-1];
+        return trace;
+    }
+    trace.enabled = YES;
+    trace.started = NSProcessInfo.processInfo.systemUptime;
+    return trace;
+}
+#endif
+// END UI_TEST_IPC_STUB_TRACE
+
 - (NSString *)stubRequestsMatching:(SBTRequestMatch *)match response:(SBTStubResponse *)response
 {
+#if DEBUG && TARGET_OS_SIMULATOR
+    SBTUITestStubTrace trace = [self beginUITestStubTrace];
+    if (trace.enabled) {
+        @try {
+            NSDictionary<NSString *, NSString *> *params = @{SBTUITunnelStubMatchRuleKey: [self base64SerializeObject:match],
+                                                             SBTUITunnelStubResponseKey: [self base64SerializeObject:response]
+                                                             };
+            trace.archived = NSProcessInfo.processInfo.systemUptime;
+            trace.archiveCompleted = YES;
+            trace.rpcEntered = YES;
+            return [self sendSynchronousRequestWithPath:SBTUITunneledApplicationCommandStubMatching params:params];
+        } @finally {
+            // Scope exit includes exceptions. This is not a successful-return
+            // receipt; unreachable stages retain explicit unavailable fields.
+            NSTimeInterval finished = NSProcessInfo.processInfo.systemUptime;
+            [self emitUITestStubTrace:"scope_exit" trace:trace finished:finished];
+        }
+    }
+#endif
+
     NSDictionary<NSString *, NSString *> *params = @{SBTUITunnelStubMatchRuleKey: [self base64SerializeObject:match],
                                                      SBTUITunnelStubResponseKey: [self base64SerializeObject:response]
                                                      };
